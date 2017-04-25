@@ -1,5 +1,6 @@
 #include <Graphics/Context.h>
 #include "opengl_ColorBufferReaderWithBufferStorage.h"
+#include "opengl_Wrapper.h"
 
 using namespace graphics;
 using namespace opengl;
@@ -19,15 +20,14 @@ ColorBufferReaderWithBufferStorage::~ColorBufferReaderWithBufferStorage()
 void ColorBufferReaderWithBufferStorage::_initBuffers()
 {
 	// Generate Pixel Buffer Objects
-	glGenBuffers(_numPBO, m_PBO);
+	FunctionWrapper::glGenBuffers(_numPBO, m_PBO);
 	m_curIndex = 0;
 
 	// Initialize Pixel Buffer Objects
 	for (int index = 0; index < _numPBO; ++index) {
 		m_bindBuffer->bind(Parameter(GL_PIXEL_PACK_BUFFER), ObjectHandle(m_PBO[index]));
-		m_fence[index] = 0;
-		glBufferStorage(GL_PIXEL_PACK_BUFFER, m_pTexture->textureBytes, nullptr, GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
-		m_PBOData[index] = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, m_pTexture->textureBytes, GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
+		FunctionWrapper::glBufferStorage(GL_PIXEL_PACK_BUFFER, m_pTexture->textureBytes, std::move(std::unique_ptr<u8[]>(nullptr)), GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
+		m_PBOData[index] = FunctionWrapper::glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, m_pTexture->textureBytes, GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
 	}
 
 	m_bindBuffer->bind(Parameter(GL_PIXEL_PACK_BUFFER), ObjectHandle::null);
@@ -35,7 +35,13 @@ void ColorBufferReaderWithBufferStorage::_initBuffers()
 
 void ColorBufferReaderWithBufferStorage::_destroyBuffers()
 {
-	glDeleteBuffers(_numPBO, m_PBO);
+	auto buffers = std::unique_ptr<GLuint[]>(new GLuint[_numPBO]);
+
+	for(unsigned int index = 0; index < _numPBO; ++index) {
+		buffers[index] = m_PBO[index];
+	}
+
+	FunctionWrapper::glDeleteBuffers(_numPBO, std::move(buffers));
 
 	for (int index = 0; index < _numPBO; ++index)
 		m_PBO[index] = 0;
@@ -48,19 +54,10 @@ const u8 * ColorBufferReaderWithBufferStorage::_readPixels(const ReadColorBuffer
 	GLenum type = GLenum(_params.colorType);
 
 	m_bindBuffer->bind(Parameter(GL_PIXEL_PACK_BUFFER), ObjectHandle(m_PBO[m_curIndex]));
-	glReadPixels(_params.x0, _params.y0, m_pTexture->realWidth, _params.height, format, type, 0);
+	FunctionWrapper::glReadPixelsAsync(_params.x0, _params.y0, m_pTexture->realWidth, _params.height, format, type);
 
-	if (!_params.sync) {
-		//Setup a fence sync object so that we know when glReadPixels completes
-		m_fence[m_curIndex] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-		m_curIndex = (m_curIndex + 1) % _numPBO;
-		//Wait for glReadPixels to complete for the currently selected PBO
-		if (m_fence[m_curIndex] != 0) {
-			glClientWaitSync(m_fence[m_curIndex], 0, 1e8);
-			glDeleteSync(m_fence[m_curIndex]);
-		}
-	} else {
-		glFinish();
+	if (_params.sync) {
+		FunctionWrapper::glFinish();
 	}
 
 	_heightOffset = 0;
